@@ -60,9 +60,16 @@
     </pluginRepository>
   </pluginRepositories>
 
+  <repositories>
+    <repository>
+      <id>jitpack.io</id>
+      <url>https://jitpack.io</url>
+    </repository>
+  </repositories>
+
   <dependencies>
     <dependency>
-      <groupId>net.pwall.json</groupId>
+      <groupId>com.github.csaf-sbom</groupId>
       <artifactId>json-kotlin-schema</artifactId>
       <version>0.48</version>
     </dependency>
