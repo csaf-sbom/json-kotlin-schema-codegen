@@ -2,6 +2,23 @@
 
 The format is based on [Keep a Changelog](http://keepachangelog.com/).
 
+## [0.111] - 2024-09-11
+### Changed
+- templates: relocated under base template directory
+- `CodeGenerator`: changed to load templates from new location
+
+## [0.110] - 2024-09-05
+### Changed
+- `CodeGenerator`, `Configurator`, `Constraints`, `Target`: Switched from `jsonutil` library to `kjson-core`, and from
+  `yaml-simple` to `kjson-yaml`
+- `CodeGenerator`, `Configurer`, `Target`, `Annotated`: Switched from `kotlin-mustache` to `mustache-k`
+- `CodeGenerator`: added explicit types to public APIs
+
+## [0.109] - 2024-09-05
+### Changed
+- templates: fixed bug in templates for map-based classes
+- `CodeGenerator`: added explicit types to public APIs
+
 ## [0.108] - 2024-08-07
 ### Added
 - `build.yml`, `deploy.yml`: converted project to GitHub Actions

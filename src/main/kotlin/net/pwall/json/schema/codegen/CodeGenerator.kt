@@ -31,28 +31,31 @@ import kotlin.reflect.KClass
 import kotlin.reflect.full.isSubclassOf
 
 import java.io.File
-import java.io.Reader
 import java.math.BigDecimal
 import java.net.URI
 import java.nio.file.Files
 import java.nio.file.Path
 
-import net.pwall.json.JSON
-import net.pwall.json.JSONArray
-import net.pwall.json.JSONBoolean
-import net.pwall.json.JSONDecimal
-import net.pwall.json.JSONDouble
-import net.pwall.json.JSONFloat
-import net.pwall.json.JSONInteger
-import net.pwall.json.JSONLong
-import net.pwall.json.JSONMapping
-import net.pwall.json.JSONNumberValue
-import net.pwall.json.JSONSequence
-import net.pwall.json.JSONString
-import net.pwall.json.JSONValue
-import net.pwall.json.JSONZero
-import net.pwall.json.pointer.JSONPointer
-import net.pwall.json.pointer.JSONReference
+import io.kjson.JSON
+import io.kjson.JSON.asObjectOr
+import io.kjson.JSONArray
+import io.kjson.JSONBoolean
+import io.kjson.JSONDecimal
+import io.kjson.JSONInt
+import io.kjson.JSONLong
+import io.kjson.JSONNumber
+import io.kjson.JSONObject
+import io.kjson.JSONString
+import io.kjson.JSONValue
+import io.kjson.mustache.Template
+import io.kjson.mustache.parser.Parser as MustacheParser
+import io.kjson.mustache.Context
+import io.kjson.pointer.JSONPointer
+import io.kjson.pointer.JSONRef
+import io.kjson.pointer.get
+import io.kjson.resource.Resource
+import io.kjson.yaml.YAML
+
 import net.pwall.json.schema.JSONSchema
 import net.pwall.json.schema.JSONSchemaException
 import net.pwall.json.schema.codegen.Constraints.Companion.asLong
@@ -81,12 +84,8 @@ import net.pwall.json.schema.validation.TypeValidator
 import net.pwall.json.schema.validation.UniqueItemsValidator
 import net.pwall.log.Log.getLogger
 import net.pwall.log.Logger
-import net.pwall.mustache.Context
-import net.pwall.mustache.Template
-import net.pwall.mustache.parser.Parser as MustacheParser
 import net.pwall.util.DefaultValue
 import net.pwall.util.Strings
-import net.pwall.yaml.YAMLSimple
 
 /**
  * JSON Schema Code Generator.  The class may be parameterised either by constructor parameters or by setting the
@@ -154,7 +153,7 @@ class CodeGenerator(
         classNameMapping.add(uri to name)
     }
 
-    var schemaParser by DefaultValue {
+    var schemaParser: Parser by DefaultValue {
         Parser().apply {
             options.validateExamples = examplesValidationOption != ValidationOption.NONE
             options.validateDefault = defaultValidationOption != ValidationOption.NONE
@@ -162,39 +161,31 @@ class CodeGenerator(
     }
 
     @Suppress("MemberVisibilityCanBePrivate")
-    var templateParser by DefaultValue {
-        MustacheParser {name ->
-            partialResolver(name)
+    var templateParser: MustacheParser by DefaultValue {
+        MustacheParser().apply {
+            for (directory in targetLanguage.directories) {
+                val url = Resource.classPathURL("/templates/$directory/") ?:
+                        fatal("Can't locate template directory /templates/$directory")
+                addDirectory(url)
+            }
         }
     }
 
-    private fun partialResolver(name: String): Reader {
-        for (dir in targetLanguage.directories)
-            CodeGenerator::class.java.getResourceAsStream("/$dir/$name.mustache")?.let { return it.reader() }
-        fatal("Can't locate template partial $name")
-    }
-
-    var template by DefaultValue {
-        val parser = templateParser
-        val resolver = parser.resolvePartial
-        parser.parse(parser.resolver(templateName))
+    var template: Template by DefaultValue {
+        templateParser.parseByName(templateName)
     }
 
     @Suppress("MemberVisibilityCanBePrivate")
     var interfaceTemplateName = "interface"
 
     @Suppress("MemberVisibilityCanBePrivate")
-    var interfaceTemplate by DefaultValue {
-        val parser = templateParser
-        val resolver = parser.resolvePartial
-        parser.parse(parser.resolver(interfaceTemplateName))
+    var interfaceTemplate: Template by DefaultValue {
+        templateParser.parseByName(interfaceTemplateName)
     }
 
     @Suppress("MemberVisibilityCanBePrivate")
-    var enumTemplate by DefaultValue {
-        val parser = templateParser
-        val resolver = parser.resolvePartial
-        parser.parse(parser.resolver(enumTemplateName))
+    var enumTemplate: Template by DefaultValue {
+        templateParser.parseByName(enumTemplateName)
     }
 
     var indexFileName: TargetFileName? = null
@@ -203,13 +194,11 @@ class CodeGenerator(
     var indexTemplateName: String = "index"
 
     @Suppress("MemberVisibilityCanBePrivate")
-    var indexTemplate by DefaultValue {
-        val parser = templateParser
-        val resolver = parser.resolvePartial
-        parser.parse(parser.resolver(indexTemplateName))
+    var indexTemplate: Template by DefaultValue {
+        templateParser.parseByName(indexTemplateName)
     }
 
-    var outputResolver by DefaultValue<OutputResolver> {
+    var outputResolver: OutputResolver by DefaultValue {
         { targetFileName ->
             targetFileName.resolve(File(baseDirectoryName)).also { checkDirectory(it.parentFile) }.writer()
         }
@@ -249,16 +238,14 @@ class CodeGenerator(
 
     })
 
-    fun setTemplateDirectory(directory: File, suffix: String = "mustache") {
+    fun setTemplateDirectory(directory: File) {
         when {
             directory.isFile -> fatal("Template directory must be a directory")
             directory.isDirectory -> {}
             else -> fatal("Error accessing template directory")
         }
-        templateParser = MustacheParser().also {
-            it.resolvePartial = { name ->
-                File(directory, "$name.$suffix").reader()
-            }
+        templateParser = MustacheParser().apply {
+            addDirectory(directory)
         }
     }
 
@@ -275,8 +262,8 @@ class CodeGenerator(
     fun configure(file: File, uri: URI? = null) {
         val fileName = file.name
         configure(when {
-            fileName.looksLikeYAML() -> YAMLSimple.process(file).rootNode
-            else -> JSON.parse(file)
+            fileName.looksLikeYAML() -> YAML.parse(file).rootNode.asObjectOr { fatal("Config file must be object") }
+            else -> JSON.parseObject(file.readText())
         }, uri ?: file.toURI())
     }
 
@@ -290,8 +277,8 @@ class CodeGenerator(
         val reader = Files.newBufferedReader(path)
         val fileName = path.toFile().name
         configure(when {
-            fileName.looksLikeYAML() -> YAMLSimple.process(reader).rootNode
-            else -> JSON.parse(reader)
+            fileName.looksLikeYAML() -> YAML.parse(reader).rootNode.asObjectOr { fatal("Config file must be object") }
+            else -> JSON.parseObject(reader.readText())
         }, uri ?: path.toUri())
     }
 
@@ -301,8 +288,8 @@ class CodeGenerator(
      * @param   json    the JSON object
      * @param   uri     an optional URI (for error reporting)
      */
-    fun configure(json: JSONValue, uri: URI? = null) {
-        Configurator.configure(this, JSONReference(json), uri)
+    fun configure(json: JSONObject, uri: URI? = null) {
+        Configurator.configure(this, JSONRef(json), uri)
     }
 
     private val targets = mutableListOf<Target>()
@@ -624,7 +611,7 @@ class CodeGenerator(
         indexFileName?.let { name ->
             log.info { "-- index $name" }
             outputResolver(name).use {
-                indexTemplate.processTo(AppendableFilter(it), TargetIndex(
+                indexTemplate.renderTo(AppendableFilter(it), TargetIndex(
                     targets = targets.filter { t ->
                         t.constraints.isObject ||
                                 t.constraints.isEnumClass && t.constraints.enumValues.let { e ->
@@ -867,7 +854,7 @@ class CodeGenerator(
         filter: (String) -> Boolean = { true }
     ) {
         val documentURI = Parser.getIdOrNull(base)?.let { URI(it) } ?: uri
-        val definitions = (pointer.find(base) as? JSONMapping<*>) ?: fatal("Can't find definitions - $pointer")
+        val definitions = (base[pointer] as? JSONObject) ?: fatal("Can't find definitions - $pointer")
         for (name in definitions.keys) {
             if (filter(name))
                 addTarget(
@@ -1056,12 +1043,12 @@ class CodeGenerator(
         }
         enumValues?.let { values ->
             baseConstraints.enumValues.let { baseValues ->
-                if ((baseValues == null || !values.containsAll(baseValues)) && values.all { it is JSONNumberValue }) {
+                if ((baseValues == null || !values.containsAll(baseValues)) && values.all { it is JSONNumber }) {
                     target.systemClasses.addOnce(SystemClass.ARRAYS)
                     target.systemClasses.addOnce(SystemClass.LIST)
                     val arrayStatic = target.addStatic(Target.StaticType.INT_ARRAY, "cg_array", values.map {
                         when (it) {
-                            is JSONInteger -> NumberValue(it.value)
+                            is JSONInt -> NumberValue(it.value)
                             is JSONLong -> NumberValue(it.value)
                             is JSONDecimal -> NumberValue(it.value)
                             else -> NumberValue(0)
@@ -1115,7 +1102,7 @@ class CodeGenerator(
     private fun Constraints.processAdditionalConstraintsEnum(
         baseConstraints: Constraints,
         localType: ClassId?,
-        enumValues: JSONSequence<*>?,
+        enumValues: JSONArray?,
     ): Boolean {
         isEnumClass = true
         if (localType != null && enumValues != null) {
@@ -1288,7 +1275,7 @@ class CodeGenerator(
             it.applyToTarget(target)
             return it
         }
-        schema.uri?.resolve(schema.location.toURIFragment())?.let { uri ->
+        schema.uri?.resolve("#${schema.location.toURIFragment()}")?.let { uri ->
             customClassesByURI.find { uri.resolve(it.uri) == uri }?.let {
                 it.applyToTarget(target)
                 return it
@@ -1521,12 +1508,12 @@ class CodeGenerator(
             }
         }
         property.enumValues?.let { array ->
-            if (array.all { it is JSONNumberValue }) {
+            if (array.all { it is JSONNumber }) {
                 target.systemClasses.addOnce(SystemClass.ARRAYS)
                 target.systemClasses.addOnce(SystemClass.LIST)
                 val arrayStatic = target.addStatic(Target.StaticType.INT_ARRAY, "cg_array", array.map {
                     when (it) {
-                        is JSONInteger -> NumberValue(it.value)
+                        is JSONInt -> NumberValue(it.value)
                         is JSONLong -> NumberValue(it.value)
                         is JSONDecimal -> NumberValue(it.value)
                         else -> NumberValue(0)
@@ -1563,27 +1550,9 @@ class CodeGenerator(
     }
 
     private fun Constraints.checkConstInt(constValue: JSONValue): Boolean {
-        when (constValue) {
-            is JSONInteger -> {
-                addValidation(Validation.Type.CONST_INT, constValue.value)
-                return true
-            }
-            is JSONLong -> {
-                constValue.value.let { v ->
-                    if (v in Int.MIN_VALUE..Int.MAX_VALUE) {
-                        addValidation(Validation.Type.CONST_INT, v)
-                        return true
-                    }
-                }
-            }
-            is JSONDecimal -> {
-                constValue.value.asLong().let { v ->
-                    if (v in Int.MIN_VALUE..Int.MAX_VALUE) {
-                        addValidation(Validation.Type.CONST_INT, v)
-                        return true
-                    }
-                }
-            }
+        if (constValue is JSONNumber && constValue.isInt()) {
+            addValidation(Validation.Type.CONST_INT, constValue.toInt())
+            return true
         }
         return false
     }
@@ -1627,19 +1596,9 @@ class CodeGenerator(
     }
 
     private fun Constraints.checkConstLong(constValue: JSONValue): Boolean {
-        when (constValue) {
-            is JSONInteger -> {
-                addValidation(Validation.Type.CONST_LONG, constValue.value)
-                return true
-            }
-            is JSONLong -> {
-                addValidation(Validation.Type.CONST_LONG, constValue.value)
-                return true
-            }
-            is JSONDecimal -> {
-                addValidation(Validation.Type.CONST_LONG, constValue.value.asLong())
-                return true
-            }
+        if (constValue is JSONNumber && constValue.isLong()) {
+            addValidation(Validation.Type.CONST_LONG, constValue.toLong())
+            return true
         }
         return false
     }
@@ -1653,12 +1612,12 @@ class CodeGenerator(
     private fun applyDecimalValidations(target: Target, property: Constraints): Boolean {
         var result = false
         property.constValue?.let {
-            if (it is JSONNumberValue) {
+            if (it is JSONNumber) {
                 if (it.isZero())
                     property.addValidation(Validation.Type.CONST_DECIMAL_ZERO)
                 else {
                     val decimalStatic = target.addStatic(Target.StaticType.DECIMAL, "cg_dec",
-                            NumberValue(it.bigDecimalValue()))
+                            NumberValue(it.toDecimal()))
                     property.addValidation(Validation.Type.CONST_DECIMAL, decimalStatic)
                 }
                 result = true
@@ -1919,17 +1878,14 @@ class CodeGenerator(
     private fun processDefaultValue(value: JSONValue?): Constraints.DefaultPropertyValue =
             when (value) {
                 null -> Constraints.DefaultPropertyValue(null, JSONSchema.Type.NULL)
-                is JSONInteger -> Constraints.DefaultPropertyValue(value.value, JSONSchema.Type.INTEGER)
-                is JSONZero -> Constraints.DefaultPropertyValue(value.value, JSONSchema.Type.INTEGER)
+                is JSONInt -> Constraints.DefaultPropertyValue(value.value, JSONSchema.Type.INTEGER)
                 is JSONLong -> Constraints.DefaultPropertyValue(value.value, JSONSchema.Type.INTEGER)
                 is JSONDecimal -> Constraints.DefaultPropertyValue(value.value, JSONSchema.Type.NUMBER)
-                is JSONDouble -> Constraints.DefaultPropertyValue(value.value, JSONSchema.Type.NUMBER)
-                is JSONFloat -> Constraints.DefaultPropertyValue(value.value, JSONSchema.Type.NUMBER)
                 is JSONString -> Constraints.DefaultPropertyValue(StringValue(value.value), JSONSchema.Type.STRING)
                 is JSONBoolean -> Constraints.DefaultPropertyValue(value.value, JSONSchema.Type.BOOLEAN)
-                is JSONSequence<*> -> Constraints.DefaultPropertyValue(value.map { processDefaultValue(it) },
+                is JSONArray -> Constraints.DefaultPropertyValue(value.map { processDefaultValue(it) },
                         JSONSchema.Type.ARRAY)
-                is JSONMapping<*> -> fatal("Can't handle object as default value")
+                is JSONObject -> fatal("Can't handle object as default value")
                 else -> fatal("Unexpected default value")
             }
 
@@ -1963,7 +1919,7 @@ class CodeGenerator(
             val enumValues = extensionSchema.value
             if (enumValues !is List<*>)
                 fatal("Extensible enum content is not array - ${extensionSchema.location}")
-            val enumJSONArray = JSONArray(enumValues.map { JSONString(it.toString()) })
+            val enumJSONArray = JSONArray.from(enumValues.map { JSONString(it.toString()) })
             if (constraints.enumValues != null && constraints.enumValues != enumJSONArray)
                 fatal("Duplicate enum - ${extensionSchema.location}")
             constraints.enumValues = enumJSONArray
@@ -2296,7 +2252,7 @@ class CodeGenerator(
                 add(entry)
         }
 
-        fun allIdentifier(array: JSONSequence<*>): Boolean {
+        fun allIdentifier(array: JSONArray): Boolean {
             return array.all { it is JSONString && it.value.isValidIdentifier() }
         }
 
